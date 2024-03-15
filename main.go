@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/dongbo/gope/cli"
+	"github.com/macbobo/gope/cli"
 	"net/http"
 	_ "net/http/pprof"
 	"os"

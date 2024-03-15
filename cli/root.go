@@ -2,10 +2,10 @@ package cli
 
 import (
 	"fmt"
-	"github.com/dongbo/gope/app"
-	"github.com/dongbo/gope/config"
-	"github.com/dongbo/gope/test"
-	"github.com/dongbo/gope/utils"
+	"github.com/macbobo/gope/app"
+	"github.com/macbobo/gope/config"
+	"github.com/macbobo/gope/test"
+	"github.com/macbobo/gope/utils"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	_ "net/http/pprof"

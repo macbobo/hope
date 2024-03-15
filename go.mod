@@ -1,4 +1,4 @@
-module github.com/dongbo/gope
+module github.com/macbobo/gope
 
 go 1.16
 

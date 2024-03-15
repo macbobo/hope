@@ -3,7 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
-	"github.com/dongbo/gope/utils"
+	"github.com/macbobo/gope/utils"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"net"

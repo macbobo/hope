@@ -3,8 +3,8 @@ package app
 import (
 	"errors"
 	"fmt"
-	"github.com/dongbo/gope/config"
-	"github.com/dongbo/gope/utils"
+	"github.com/macbobo/gope/config"
+	"github.com/macbobo/gope/utils"
 	"github.com/panjf2000/ants/v2"
 	"github.com/panjf2000/gnet"
 	"github.com/panjf2000/gnet/pkg/logging"
