@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/gabriel-vasile/mimetype"
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/panjf2000/gnet"
 	"html"
 	"net"
@@ -13,6 +14,9 @@ import (
 	"strings"
 )
 
+/*
+go get -u github.com/gorilla/csrf
+*/
 type Http struct {
 	requ       *http.Request
 	resp       *http.Response
@@ -41,6 +45,11 @@ func (a *Http) filter_request() (Filter_t, *http.Request, []byte) {
 	regexp.MatchString("", a.requ.URL.Path)
 
 	//todo header
+
+	//html sanitize
+	p := bluemonday.NewPolicy()
+	p.AllowTables()
+	p.SanitizeBytes(a.body)
 
 	return FILTER_ACCEPT, nil, nil
 }
@@ -96,7 +105,7 @@ func (a *Http) ParserRequ(packet []byte, c gnet.Conn, p interface{}) (interface{
 				}
 			}
 
-			//filter_request()
+			a.filter_request()
 
 			var tmp http.Request
 			tmp = *a.requ
