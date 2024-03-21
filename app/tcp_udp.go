@@ -21,11 +21,18 @@ type App interface {
 }
 
 type conntrack_t struct {
-	ukey    string
-	src     gnet.Conn
-	dst     gnet.Conn
-	dst_cli *gnet.Client
-	active  time.Time
+	uid         string
+	key         string
+	src         gnet.Conn
+	dst         gnet.Conn
+	dst_cli     *gnet.Client
+	active      time.Time
+	src_pacekts [2]int64
+	src_bytes   [2]int64
+	dst_pacekts [2]int64
+	dst_bytes   [2]int64
+
+	user interface{}
 }
 type Server_t struct {
 	Config     config.Config_t
@@ -71,6 +78,14 @@ func (m *Tcp_udp_c) AfterWrite(c gnet.Conn, b []byte) {
 
 func (m *Tcp_udp_c) React(packet []byte, c gnet.Conn) (out []byte, action gnet.Action) {
 	cm, _ := m.conntracks.Load(c.Context())
+	var cmi *conntrack_t
+
+	if cm != nil {
+		cmi = cm.(*conntrack_t)
+		cmi.dst_pacekts[0] += 1
+		cmi.dst_bytes[0] += int64(len(packet))
+		cmi.active = time.Now()
+	}
 
 	if m.app != nil {
 		nac, o, err := m.app.ParserResp(packet, c, m)
@@ -92,21 +107,19 @@ func (m *Tcp_udp_c) React(packet []byte, c gnet.Conn) (out []byte, action gnet.A
 		if m.Config.Protocol == config.PROTOCOL_TCP {
 			var t []byte
 			t = append(t, packet...)
-			cmi := cm.(*conntrack_t)
 			if m.gpool != nil {
 				m.gpool.Submit(func() {
 					cmi.src.AsyncWrite(t)
-					cmi.active = time.Now()
 				})
 			} else {
 				gwrite(cmi.src, t)
-				cmi.active = time.Now()
 			}
 
 		} else {
-			cm.(*conntrack_t).src.SendTo(packet)
-			cm.(*conntrack_t).active = time.Now()
+			cmi.src.SendTo(packet)
 		}
+		cmi.src_pacekts[1] += 1
+		cmi.src_bytes[1] += int64(len(packet))
 	}
 	return
 }
@@ -115,36 +128,22 @@ func (m *Tcp_udp_c) OnClosed(c gnet.Conn, err error) (action gnet.Action) {
 
 	k := c.Context()
 
-	d := c.Read()
-
 	if m.app != nil {
 		m.app.Reset(c)
 	}
 
-	fmt.Println("test close3", time.Now())
+	if c.BufferLength() > 0 {
+		fmt.Println("warning")
+	}
+	d := c.Read()
 	if len(d) > 0 {
-		cm, _ := m.conntracks.Load(k)
-		if cm != nil {
-			if m.Config.Protocol == config.PROTOCOL_TCP {
-				cmi := cm.(*conntrack_t)
-				if m.gpool != nil {
-					m.gpool.Submit(func() {
-						cmi.src.AsyncWrite(d)
-						cmi.active = time.Now()
-					})
-				} else {
-					gwrite(cmi.src, d)
-					cmi.active = time.Now()
-				}
-			} else {
-				cm.(*conntrack_t).src.SendTo(c.Read())
-				cm.(*conntrack_t).active = time.Now()
-			}
-		}
+		fmt.Println("warning")
 	}
 
 	cm, _ := m.conntracks.Load(k)
 	if cm != nil {
+		fmt.Println("test close3", time.Now(), cm.(*conntrack_t))
+
 		go func() {
 			//time.Sleep(time.Millisecond * 1000)
 			cm.(*conntrack_t).src.Close()
@@ -211,16 +210,18 @@ func (m *Tcp_udp_s) OnOpened(c gnet.Conn) (out []byte, action gnet.Action) {
 			action = gnet.Close
 		} else {
 			p.Start()
-			k := fmt.Sprintf("%s://%s->%s", m.Config.Protocol_str, c.LocalAddr(), c.RemoteAddr())
-			v := new(conntrack_t)
-			*v = conntrack_t{src: c, dst: pc, active: time.Now(), ukey: time.Now().String(), dst_cli: nil}
-			m.conntracks.Store(k, v)
-			c.SetContext(k)
+			ts := "@" + time.Now().String()
+			k1 := fmt.Sprintf("%s://%s->%s", m.Config.Protocol_str, c.LocalAddr(), c.RemoteAddr())
+			v1 := new(conntrack_t)
+			*v1 = conntrack_t{src: c, dst: pc, active: time.Now(), uid: k1 + ts, key: k1, dst_cli: nil}
+			m.conntracks.Store(k1, v1)
+			c.SetContext(k1)
 
-			k = fmt.Sprintf("%s://%s->%s", m.Config.Protocolex_str, pc.LocalAddr(), pc.RemoteAddr())
-			v = new(conntrack_t)
-			*v = conntrack_t{src: c, dst: pc, active: time.Now(), ukey: time.Now().String(), dst_cli: p}
-			m.conntracks.Store(k, v)
+			//key must SetContext
+			k2 := fmt.Sprintf("%s://%s->%s", m.Config.Protocolex_str, pc.LocalAddr(), pc.RemoteAddr())
+			v2 := new(conntrack_t)
+			*v2 = conntrack_t{src: c, dst: pc, active: time.Now(), uid: k1 + ts, key: k2, dst_cli: p}
+			m.conntracks.Store(k2, v2)
 		}
 	}
 
@@ -230,6 +231,15 @@ func (m *Tcp_udp_s) OnOpened(c gnet.Conn) (out []byte, action gnet.Action) {
 func (m *Tcp_udp_s) React(packet []byte, c gnet.Conn) (out []byte, action gnet.Action) {
 
 	k := c.Context()
+
+	cm, _ := m.conntracks.Load(c.Context())
+	var cmi *conntrack_t
+	if cm != nil {
+		cmi = cm.(*conntrack_t)
+		cmi.src_pacekts[0] += 1
+		cmi.src_bytes[0] += int64(len(packet))
+		cm.(*conntrack_t).active = time.Now()
+	}
 
 	if m.app != nil {
 		nac, o, err := m.app.ParserRequ(packet, c, m)
@@ -249,46 +259,48 @@ func (m *Tcp_udp_s) React(packet []byte, c gnet.Conn) (out []byte, action gnet.A
 
 	}
 
-	cm, _ := m.conntracks.Load(c.Context())
 	if cm != nil {
 		if m.Config.Protocolex == config.PROTOCOL_TCP {
 			var t []byte
 			t = append(t, packet...)
 			if m.gpool != nil {
 				m.gpool.Submit(func() {
-					cm.(*conntrack_t).dst.AsyncWrite(t)
-					cm.(*conntrack_t).active = time.Now()
+					cmi.dst.AsyncWrite(t)
 				})
 			} else {
-				gwrite(cm.(*conntrack_t).dst, t)
-				cm.(*conntrack_t).active = time.Now()
+				gwrite(cmi.dst, t)
 			}
 
 		} else {
-			cm.(*conntrack_t).dst.SendTo(packet)
-			cm.(*conntrack_t).active = time.Now()
+			cmi.dst.SendTo(packet)
 		}
+		cmi.dst_pacekts[1] += 1
+		cmi.dst_bytes[1] += int64(len(packet))
 	} else if m.Config.Protocol == config.PROTOCOL_UDP {
 		m.OnOpened(c)
 		cm, _ = m.conntracks.Load(k)
 		if cm != nil {
+			cmi = cm.(*conntrack_t)
+			cmi.src_pacekts[0] += 1
+			cmi.src_bytes[0] += int64(len(packet))
+			cm.(*conntrack_t).active = time.Now()
+
 			if m.Config.Protocolex == config.PROTOCOL_TCP {
 				var t []byte
 				t = append(t, packet...)
 				if m.gpool != nil {
 					m.gpool.Submit(func() {
-						cm.(*conntrack_t).dst.AsyncWrite(t)
-						cm.(*conntrack_t).active = time.Now()
+						cmi.dst.AsyncWrite(t)
 					})
 				} else {
-					gwrite(cm.(*conntrack_t).dst, t)
-					cm.(*conntrack_t).active = time.Now()
+					gwrite(cmi.dst, t)
 				}
 
 			} else {
-				cm.(*conntrack_t).dst.SendTo(packet)
-				cm.(*conntrack_t).active = time.Now()
+				cmi.dst.SendTo(packet)
 			}
+			cmi.dst_pacekts[1] += 1
+			cmi.dst_bytes[1] += int64(len(packet))
 		}
 
 	}
@@ -301,10 +313,14 @@ func (m *Tcp_udp_s) OnClosed(c gnet.Conn, err error) (action gnet.Action) {
 	if m.app != nil {
 		m.app.Reset(c)
 	}
+	if c.BufferLength() > 0 {
+		fmt.Println("warning")
+		c.Wake()
+	}
 
-	fmt.Println("test close1")
 	cm, _ := m.conntracks.Load(k)
 	if cm != nil {
+		fmt.Println("test close1", time.Now(), cm.(*conntrack_t))
 		cm.(*conntrack_t).dst.Close()
 		m.conntracks.Delete(k)
 	}

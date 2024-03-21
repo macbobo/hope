@@ -10,3 +10,9 @@ const (
 	FILTER_CACHE
 	FILTER_MODIFY
 )
+
+const (
+	CODE_UNKNOWN int = iota - 1
+	CODE_UTF8
+	CODE_GBK
+)

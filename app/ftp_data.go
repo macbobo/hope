@@ -29,12 +29,6 @@ const (
 	FTPDATA_PORT
 )
 
-const (
-	CODE_UNKNOWN int = iota - 1
-	CODE_UTF8
-	CODE_GBK
-)
-
 type Ftpdata struct {
 	gnet.EventServer
 	Server_t
@@ -144,7 +138,6 @@ func (a *Ftpdata_app) Reset(c gnet.Conn) {
 				if m.gpool != nil {
 					m.gpool.Submit(func() {
 						cmi.dst.AsyncWrite(o)
-						cmi.active = time.Now()
 					})
 				} else {
 
@@ -155,8 +148,10 @@ func (a *Ftpdata_app) Reset(c gnet.Conn) {
 					//	gwrite(cmi.dst, e)
 					//	runtime.Gosched()
 					//}
-					cmi.active = time.Now()
 				}
+
+				cmi.dst_pacekts[1] += 1
+				cmi.dst_bytes[1] += int64(len(o))
 			}
 		case <-time.After(time.Millisecond * 100000): //todo 异步处理时间优化？
 			fmt.Println("timeout")
@@ -210,16 +205,17 @@ func (m *Ftpdata) OnOpened(c gnet.Conn) (out []byte, action gnet.Action) {
 				action = gnet.Shutdown
 			} else {
 				p.Start()
-				k := fmt.Sprintf("%s://%s->%s", m.Config.Protocol_str, c.LocalAddr(), c.RemoteAddr())
-				v := new(conntrack_t)
-				*v = conntrack_t{src: c, dst: pc, active: time.Now(), ukey: time.Now().String(), dst_cli: nil}
-				m.conntracks.Store(k, v)
-				c.SetContext(k)
+				ts := "@" + time.Now().String()
+				k1 := fmt.Sprintf("%s://%s->%s", m.Config.Protocol_str, c.LocalAddr(), c.RemoteAddr())
+				v1 := new(conntrack_t)
+				*v1 = conntrack_t{src: c, dst: pc, active: time.Now(), uid: k1 + ts, key: k1, dst_cli: nil}
+				m.conntracks.Store(k1, v1)
+				c.SetContext(k1)
 
-				k = fmt.Sprintf("%s://%s->%s", m.Config.Protocolex_str, pc.LocalAddr(), pc.RemoteAddr())
-				v = new(conntrack_t)
-				*v = conntrack_t{src: c, dst: pc, active: time.Now(), ukey: time.Now().String(), dst_cli: p}
-				m.conntracks.Store(k, v)
+				k2 := fmt.Sprintf("%s://%s->%s", m.Config.Protocolex_str, pc.LocalAddr(), pc.RemoteAddr())
+				v2 := new(conntrack_t)
+				*v2 = conntrack_t{src: c, dst: pc, active: time.Now(), uid: k1 + ts, key: k2, dst_cli: p}
+				m.conntracks.Store(k2, v2)
 			}
 		}
 	}
@@ -611,6 +607,14 @@ func (m *Ftpdata) filter_data(packet []byte) (Filter_t, []byte) {
 func (m *Ftpdata) React(packet []byte, c gnet.Conn) (out []byte, action gnet.Action) {
 	cm, _ := m.conntracks.Load(c.Context())
 
+	var cmi *conntrack_t
+	if cm != nil {
+		cmi = cm.(*conntrack_t)
+		cmi.src_pacekts[0] += 1
+		cmi.src_bytes[0] += int64(len(packet))
+		cm.(*conntrack_t).active = time.Now()
+	}
+
 	fmt.Println("Ftpdata_app server")
 
 	//todo 是否过滤
@@ -653,16 +657,16 @@ func (m *Ftpdata) React(packet []byte, c gnet.Conn) (out []byte, action gnet.Act
 	if cm != nil {
 		var t []byte
 		t = append(t, packet...)
-		cmi := cm.(*conntrack_t)
 		if m.gpool != nil {
 			m.gpool.Submit(func() {
 				cmi.dst.AsyncWrite(t)
-				cmi.active = time.Now()
 			})
 		} else {
 			gwrite(cmi.dst, t)
-			cmi.active = time.Now()
 		}
+
+		cmi.dst_pacekts[1] += 1
+		cmi.dst_bytes[1] += int64(len(packet))
 	}
 
 	return
@@ -698,7 +702,6 @@ func (m *Ftpdata) OnClosed(c gnet.Conn, err error) (action gnet.Action) {
 		action = gnet.Shutdown
 	}
 
-	fmt.Println("test close2")
 	fmt.Println("test len", c.BufferLength())
 
 	if m.iostream != nil {
@@ -742,7 +745,7 @@ func (m *Ftpdata) OnClosed(c gnet.Conn, err error) (action gnet.Action) {
 	cm, _ := m.conntracks.Load(k)
 	if cm != nil {
 		//todo 如何正确判断写完结束，暂时采用流分段回写方式
-		fmt.Println("test close4", time.Now())
+		fmt.Println("test close4", time.Now(), cm.(*conntrack_t))
 		cm.(*conntrack_t).dst.Close()
 		m.conntracks.Delete(k)
 	}
