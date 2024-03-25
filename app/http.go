@@ -17,6 +17,7 @@ import (
 /*参考学习
 https://github.com/google/martian
 https://github.com/snail007/goproxy
+https://github.com/AdguardTeam/gomitmproxy
 */
 
 /*防注入
@@ -159,9 +160,9 @@ func (a *Http) ParserRequ(packet []byte, c gnet.Conn, p interface{}) (interface{
 			tmp.Header.Set("User-Agent", "gope/1.0")
 			xff := tmp.Header.Get("X-Forwarded-For")
 			if len(xff) == 0 {
-				xff = strings.Split(c.RemoteAddr().String(), ":")[0] + ", " + p.(*Tcp_udp_s).Config.Bindip_str
+				xff = strings.Split(c.RemoteAddr().String(), ":")[0] //+ ", " + p.(*Tcp_udp_s).Config.Bindip_str
 			} else {
-				xff += ", " + p.(*Tcp_udp_s).Config.Bindip_str
+				xff += ", " + strings.Split(c.RemoteAddr().String(), ":")[0]
 			}
 			tmp.Header.Set("X-Forwarded-For", xff)
 			tmp.Host = net.JoinHostPort(p.(*Tcp_udp_s).Config.Upstreamip_str, fmt.Sprint(p.(*Tcp_udp_s).Config.Upstreamport))

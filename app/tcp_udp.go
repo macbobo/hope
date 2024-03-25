@@ -1,6 +1,8 @@
 package app
 
 import (
+	"crypto/tls"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"github.com/macbobo/gope/config"
@@ -9,6 +11,9 @@ import (
 	"github.com/panjf2000/gnet"
 	"github.com/panjf2000/gnet/pkg/logging"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -315,7 +320,6 @@ func (m *Tcp_udp_s) OnClosed(c gnet.Conn, err error) (action gnet.Action) {
 	}
 	if c.BufferLength() > 0 {
 		fmt.Println("warning")
-		c.Wake()
 	}
 
 	cm, _ := m.conntracks.Load(k)
@@ -361,6 +365,8 @@ func (m *Tcp_udp_s) Init() (int, error) {
 		m.app = new(Ftp)
 	case "http":
 		m.app = new(Http)
+	case "https":
+		m.app = new(Https)
 	default:
 		return -1, errors.New(fmt.Sprintf("app<%s> unknown", m.Config.App))
 
@@ -370,7 +376,9 @@ func (m *Tcp_udp_s) Init() (int, error) {
 func (m *Tcp_udp_s) Wait() {
 
 	m.wg.Wait()
-	m.gpool.Release()
+	if m.gpool != nil {
+		m.gpool.Release()
+	}
 }
 
 func (m *Tcp_udp_s) Startup() (int, error) {
@@ -378,18 +386,128 @@ func (m *Tcp_udp_s) Startup() (int, error) {
 	m.wg.Add(1)
 
 	go func() {
-		err := gnet.Serve(m,
-			fmt.Sprintf("%s://%s", m.Config.Protocol_str, net.JoinHostPort(m.Config.Bindip_str, fmt.Sprint(m.Config.Bindport))),
-			gnet.WithMulticore(true),
-			gnet.WithTicker(true),
-			gnet.WithReusePort(true),
-			gnet.WithTCPKeepAlive(60*time.Second),
-			gnet.WithLogPath("./gnet_s.log"),
-			gnet.WithLogLevel(logging.DebugLevel),
-		)
+		if m.Config.App == "https" {
+			//cert, err := tls.LoadX509KeyPair(m.app.(*Https).tlscert, m.app.(*Https).tlskey)
+			//# 生成私钥
+			//openssl genpkey -algorithm RSA -out server.key
+			//# 生成自签名的服务器证书请求
+			//openssl req -new -key server.key -out server.csr
+			//# 生成自签名的服务器证书
+			//openssl x509 -req -in server.csr -signkey server.key -out server.crt
 
-		if err != nil {
-			utils.Logger.SugarLogger.Error(err)
+			cert, err := tls.LoadX509KeyPair("./test/server.crt", "./test/server.key")
+			if err == nil {
+				https := http.Server{Addr: net.JoinHostPort(m.Config.Bindip_str, fmt.Sprint(m.Config.Bindport)),
+					TLSConfig: &tls.Config{
+						Certificates: []tls.Certificate{cert},
+						MinVersion:   tls.VersionTLS12,
+
+						//todo 算法概念？
+						//ClientAuth:   tls.RequireAndVerifyClientCert,
+						//CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
+						//PreferServerCipherSuites: true,
+						//CipherSuites: []uint16{
+						//	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+						//	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+						//	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+						//	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+						//
+						//},
+					}}
+
+				http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+					fmt.Println(request)
+					if request.TLS != nil {
+						dump, _ := httputil.DumpRequest(request, true)
+						fmt.Printf("%q", dump)
+						fmt.Println()
+
+						cert_c := request.TLS.PeerCertificates
+						if len(cert_c) > 0 {
+							// 将证书切片转换为字符串
+							certStr := ""
+							for _, c := range cert_c {
+								certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})
+								certStr += string(certPEM)
+							}
+							request.Header.Set("X-Client-Cert", certStr)
+						}
+					}
+
+					us, _ := url.Parse(m.Config.Appex + "://" +
+						net.JoinHostPort(m.Config.Upstreamip_str, fmt.Sprintf("%d", m.Config.Upstreamport)))
+					ps := httputil.NewSingleHostReverseProxy(us)
+					ps.ModifyResponse = func(response *http.Response) error {
+						//	fmt.Println(response.Body)
+						//	//buf := make([]byte, 1024)
+						//	//var content []byte
+						//	//
+						//	//for {
+						//	//	n, err := response.Body.Read(buf)
+						//	//	if n > 0 {
+						//	//		content = append(content, buf[:n]...)
+						//	//	}
+						//	//
+						//	//	if err != nil {
+						//	//		if err == io.EOF {
+						//	//			// 成功读取所有数据
+						//	//			break
+						//	//		}
+						//	//		return err
+						//	//	}
+						//	//}
+						//	//
+						//	//// 将读取的内容转换为字符串并打印
+						//	//fmt.Println(string(content))
+						//
+
+						response.Header.Del("Server")
+						response.Header.Del("Date")
+						fmt.Println(response.Header)
+						return nil
+					}
+					ps.Transport = &http.Transport{
+						TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{cert},
+							InsecureSkipVerify: true,
+							MinVersion:         tls.VersionTLS12,
+						},
+						//Proxy: func(r *http.Request) (*url.URL, error) {
+						//	us, _ := url.Parse(m.Config.App + "://" +
+						//		net.JoinHostPort(m.Config.Upstreamip_str, fmt.Sprintf("%d", m.Config.Upstreamport)) + "/su-uos")
+						//
+						//	return us, nil
+						//},
+						//GetProxyConnectHeader: func(ctx context.Context, proxyURL *url.URL, target string) (http.Header, error) {
+						//	return nil, nil
+						//
+						//},
+					}
+					//request.Header.Set("Host", "192.168.55.65:10443")
+
+					ps.ServeHTTP(writer, request)
+
+				})
+				err := https.ListenAndServeTLS("", "")
+				if err != nil {
+					fmt.Println(err)
+				}
+
+			}
+
+		} else {
+			err := gnet.Serve(m,
+				fmt.Sprintf("%s://%s", m.Config.Protocol_str, net.JoinHostPort(m.Config.Bindip_str, fmt.Sprint(m.Config.Bindport))),
+				gnet.WithMulticore(true),
+				gnet.WithTicker(true),
+				gnet.WithReusePort(true),
+				gnet.WithTCPKeepAlive(60*time.Second),
+				gnet.WithLogPath("./gnet_s.log"),
+				gnet.WithLogLevel(logging.DebugLevel),
+			)
+
+			if err != nil {
+				utils.Logger.SugarLogger.Error(err)
+			}
 		}
 		m.wg.Done()
 	}()
