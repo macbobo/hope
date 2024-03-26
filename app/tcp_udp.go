@@ -1,19 +1,24 @@
 package app
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"github.com/macbobo/gope/config"
 	"github.com/macbobo/gope/utils"
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/panjf2000/ants/v2"
 	"github.com/panjf2000/gnet"
 	"github.com/panjf2000/gnet/pkg/logging"
+	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -387,14 +392,16 @@ func (m *Tcp_udp_s) Startup() (int, error) {
 
 	go func() {
 		if m.Config.App == "https" {
-			//cert, err := tls.LoadX509KeyPair(m.app.(*Https).tlscert, m.app.(*Https).tlskey)
-			//# 生成私钥
-			//openssl genpkey -algorithm RSA -out server.key
-			//# 生成自签名的服务器证书请求
-			//openssl req -new -key server.key -out server.csr
-			//# 生成自签名的服务器证书
-			//openssl x509 -req -in server.csr -signkey server.key -out server.crt
+			/*
+				# 生成私钥
+				openssl genpkey -algorithm RSA -out server.key
+				# 生成自签名的服务器证书请求
+				openssl req -new -key server.key -out server.csr
+				# 生成自签名的服务器证书
+				openssl x509 -req -in server.csr -signkey server.key -out server.crt
+			*/
 
+			//cert, err := tls.LoadX509KeyPair(m.app.(*Https).tlscert, m.app.(*Https).tlskey)
 			cert, err := tls.LoadX509KeyPair("./test/server.crt", "./test/server.key")
 			if err == nil {
 				https := http.Server{Addr: net.JoinHostPort(m.Config.Bindip_str, fmt.Sprint(m.Config.Bindport)),
@@ -418,9 +425,9 @@ func (m *Tcp_udp_s) Startup() (int, error) {
 				http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 					fmt.Println(request)
 					if request.TLS != nil {
-						dump, _ := httputil.DumpRequest(request, true)
-						fmt.Printf("%q", dump)
-						fmt.Println()
+						//dump, _ := httputil.DumpRequest(request, true)
+						//fmt.Printf("%q", dump)
+						//fmt.Println()
 
 						cert_c := request.TLS.PeerCertificates
 						if len(cert_c) > 0 {
@@ -438,34 +445,31 @@ func (m *Tcp_udp_s) Startup() (int, error) {
 						net.JoinHostPort(m.Config.Upstreamip_str, fmt.Sprintf("%d", m.Config.Upstreamport)))
 					ps := httputil.NewSingleHostReverseProxy(us)
 					ps.ModifyResponse = func(response *http.Response) error {
-						//	fmt.Println(response.Body)
-						//	//buf := make([]byte, 1024)
-						//	//var content []byte
-						//	//
-						//	//for {
-						//	//	n, err := response.Body.Read(buf)
-						//	//	if n > 0 {
-						//	//		content = append(content, buf[:n]...)
-						//	//	}
-						//	//
-						//	//	if err != nil {
-						//	//		if err == io.EOF {
-						//	//			// 成功读取所有数据
-						//	//			break
-						//	//		}
-						//	//		return err
-						//	//	}
-						//	//}
-						//	//
-						//	//// 将读取的内容转换为字符串并打印
-						//	//fmt.Println(string(content))
-						//
+						//fmt.Println(response.Body)
+
+						// todo 此处理内部是由modifyResponse调用2次
+						// 1. statuscode=101
+						// 2. 默认调用
 
 						response.Header.Del("Server")
 						response.Header.Del("Date")
+						if strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") {
+							buf, _ := io.ReadAll(response.Body)
+							fmt.Println(string(buf))
+
+							p := bluemonday.UGCPolicy()
+							san := p.SanitizeBytes(buf)
+							fmt.Println(string(san))
+
+							//todo 不完整的数据
+							response.ContentLength = int64(len(san))
+							//返回新数据
+							response.Body = ioutil.NopCloser(bytes.NewReader(san))
+						}
 						fmt.Println(response.Header)
 						return nil
 					}
+					
 					ps.Transport = &http.Transport{
 						TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{cert},
 							InsecureSkipVerify: true,
@@ -481,8 +485,26 @@ func (m *Tcp_udp_s) Startup() (int, error) {
 						//	return nil, nil
 						//
 						//},
+						ForceAttemptHTTP2: false,
 					}
-					//request.Header.Set("Host", "192.168.55.65:10443")
+
+					oldDirector := ps.Director
+					ps.Director = func(request *http.Request) {
+						//request是代理转发的请求outreq
+						//todo hop-by-hop connection的理解？
+						request.Header.Set("User-Agent", "gope/1.0")
+						request.Proto = "HTTP/1.0"
+						request.ProtoMajor, request.ProtoMinor, _ = http.ParseHTTPVersion(request.Proto)
+
+						oldDirector(request)
+
+						fmt.Println(request)
+
+					}
+
+					ps.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
+						fmt.Println(err)
+					}
 
 					ps.ServeHTTP(writer, request)
 
