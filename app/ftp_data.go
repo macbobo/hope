@@ -168,6 +168,11 @@ func (a *Ftpdata_app) Reset(c gnet.Conn) {
 func (a *Ftpdata_app) Tick(p interface{}) {
 
 }
+
+func (a *Ftpdata_app) Startup(p interface{}) error {
+	return nil
+}
+
 func (m *Ftpdata) OnOpened(c gnet.Conn) (out []byte, action gnet.Action) {
 
 	if m.onceopened {

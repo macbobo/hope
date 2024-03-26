@@ -113,3 +113,7 @@ func (a *Ftp) Tick(parent interface{}) {
 		parent.(*Tcp_udp_c).Config.Subext = parent.(*Tcp_udp_c).Config.Subext[all-10:]
 	}
 }
+
+func (a *Ftp) Startup(parent interface{}) error {
+	return nil
+}

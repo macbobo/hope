@@ -51,7 +51,7 @@ type Http struct {
 	newout bytes.Buffer
 }
 
-var methods = []string{
+var HttpMethods = []string{
 	"GET",
 	"POST",
 	"CONNECT",
@@ -121,7 +121,7 @@ func (a *Http) filter_response() (Filter_t, *http.Response, []byte) {
 
 func (a *Http) ParserRequ(packet []byte, c gnet.Conn, p interface{}) (interface{}, []byte, error) {
 	var rege string = "^("
-	for i, s := range methods {
+	for i, s := range HttpMethods {
 		if i > 0 {
 			rege += "|" + s
 		} else {
@@ -270,4 +270,9 @@ func (a *Http) Reset(c gnet.Conn) {
 }
 
 func (a *Http) Tick(parent interface{}) {
+
+}
+
+func (a *Http) Startup(parent interface{}) error {
+	return nil
 }
