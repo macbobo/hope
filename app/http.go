@@ -3,11 +3,14 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/panjf2000/gnet"
 	"html"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"regexp"
@@ -31,15 +34,16 @@ go get github.com/gorilla/csrf
 
 //todo *表示功能难点和复杂度
 1】*ipv4和ipv6的代理转换（over）
-2】**http2,https
+2】**http2,https,gmssl算法支持(SM3,SM4)
 3】过滤功能
 	3.1 数据类型, Content-Type
     3.2 数据大小, Content-Length
 	3.3 *病毒检测
-	3.4 **URL,header,body内容（过滤，修改or删除）防注入(XSS,SQL...)
+	3.4 **URL,header,body内容（过滤,修改or删除）防注入(XSS,SQL...)
 	3.5 *资产识别
 4】dns域名
 5】**http-https代理转换
+6】**自动重定向,嵌套深度
 */
 
 type Http struct {
@@ -231,6 +235,11 @@ func (a *Http) ParserResp(packet []byte, c gnet.Conn, p interface{}) (interface{
 			}
 		}
 
+		if (a.resp.StatusCode >= http.StatusMultipleChoices) && (a.resp.StatusCode <= http.StatusPermanentRedirect) {
+			fmt.Println(a.resp.Location())
+			//todo 重定向
+		}
+
 	} else {
 		fmt.Println("body len", len(packet), a.bodyoffset)
 		//todo
@@ -255,6 +264,30 @@ func (a *Http) ParserResp(packet []byte, c gnet.Conn, p interface{}) (interface{
 
 		if a.bodyoffset == int(a.requ.ContentLength) {
 
+			switch a.resp.Header.Get("Content-Encoding") {
+			case "gzip":
+				zip, err := gzip.NewReader(bytes.NewReader(a.body))
+				if err == nil {
+					defer zip.Close()
+					unzip, err := ioutil.ReadAll(zip)
+					if err == nil {
+						fmt.Println(string(unzip))
+					}
+				}
+
+			case "compress":
+			case "deflate":
+				zip := flate.NewReader(bytes.NewReader(a.body))
+				defer zip.Close()
+				unzip, err := ioutil.ReadAll(zip)
+				if err == nil {
+					fmt.Println(string(unzip))
+				}
+			case "identiy":
+			case "br":
+			default:
+
+			}
 		}
 
 	}

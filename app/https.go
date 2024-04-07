@@ -15,6 +15,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type Https struct {
@@ -22,7 +23,7 @@ type Https struct {
 	tlsversion string
 	tlscert    string //证书配置
 	tlskey     string
-	mitmstate  map[string]int //会话状态
+	mitmstate  map[string]*httputil.ReverseProxy //会话状态
 }
 
 func (a *Https) ParserRequ(packet []byte, c gnet.Conn, p interface{}) (interface{}, []byte, error) {
@@ -30,21 +31,21 @@ func (a *Https) ParserRequ(packet []byte, c gnet.Conn, p interface{}) (interface
 	fmt.Println("client", tlsi)
 
 	//todo MITM劫持
-	k := c.Context()
-	switch a.mitmstate[k.(string)] {
-	case 0:
-		if tls_api.GetTLSVersion(tlsi.ClientHelloTLSRecord.HandshakeProtocol.TLSVersion) != "" {
-			//cert, err := tls.LoadX509KeyPair(a.tlscert, a.tlskey)
-			//if err == nil {
-			//	cfg := &tls.Config{Certificates: []tls.Certificate{cert}}
-			//}
+	/*	k := c.Context()
+		switch a.mitmstate[k.(string)] {
+		case 0:
+			if tls_api.GetTLSVersion(tlsi.ClientHelloTLSRecord.HandshakeProtocol.TLSVersion) != "" {
+				//cert, err := tls.LoadX509KeyPair(a.tlscert, a.tlskey)
+				//if err == nil {
+				//	cfg := &tls.Config{Certificates: []tls.Certificate{cert}}
+				//}
+			}
+		case 1:
+		case 2:
+		default:
+
 		}
-	case 1:
-	case 2:
-	default:
-
-	}
-
+	*/
 	return nil, nil, nil
 }
 
@@ -73,10 +74,17 @@ func (a *Https) Startup(parent interface{}) error {
 		openssl x509 -req -in server.csr -signkey server.key -out server.crt
 	*/
 
+	a.mitmstate = make(map[string]*httputil.ReverseProxy)
 	m := parent.(*Tcp_udp_s)
 
-	//cert, err := tls.LoadX509KeyPair(m.app.(*Https).tlscert, m.app.(*Https).tlskey)
-	cert, err := tls.LoadX509KeyPair("./test/server.crt", "./test/server.key")
+	var cert tls.Certificate
+	var err error
+	if (m.app.(*Https).tlscert == "") || (m.app.(*Https).tlskey == "") {
+		cert, err = tls.LoadX509KeyPair("./test/server.crt", "./test/server.key")
+	} else {
+		cert, err = tls.LoadX509KeyPair(m.app.(*Https).tlscert, m.app.(*Https).tlskey)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -100,10 +108,11 @@ func (a *Https) Startup(parent interface{}) error {
 			//},
 		},
 		ConnState: func(conn net.Conn, state http.ConnState) {
-			fmt.Println(conn.LocalAddr(), conn.RemoteAddr(), state)
+			fmt.Println(time.Now(), conn.LocalAddr(), conn.RemoteAddr(), state)
 			switch state {
 			case http.StateNew:
 			case http.StateClosed:
+				delete(a.mitmstate, conn.RemoteAddr().String())
 			case http.StateActive:
 
 			default:
@@ -115,10 +124,15 @@ func (a *Https) Startup(parent interface{}) error {
 		//
 		//	return nil
 		//},
+
 	}
 
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		fmt.Println(request)
+
+		localAddr := request.Context().Value(http.LocalAddrContextKey).(net.Addr)
+		fmt.Printf("本地地址1: %s\n", localAddr.String())
+
 		if request.TLS != nil {
 			//dump, _ := httputil.DumpRequest(request, true)
 			//fmt.Printf("%q", dump)
@@ -138,70 +152,112 @@ func (a *Https) Startup(parent interface{}) error {
 
 		us, _ := url.Parse(m.Config.Appex + "://" +
 			net.JoinHostPort(m.Config.Upstreamip_str, fmt.Sprintf("%d", m.Config.Upstreamport)))
-		ps := httputil.NewSingleHostReverseProxy(us)
-		ps.ModifyResponse = func(response *http.Response) error {
-			//fmt.Println(response.Body)
 
-			// todo 此处理内部是由modifyResponse调用2次
-			// 1. statuscode=101
-			// 2. 默认调用
+		var ps *httputil.ReverseProxy
 
-			response.Header.Del("Server")
-			response.Header.Del("Date")
-			if strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") {
+		if a.mitmstate[request.RemoteAddr] == nil {
+			ps = httputil.NewSingleHostReverseProxy(us)
+			ps.ModifyResponse = func(response *http.Response) error {
+				//fmt.Println(response.Body)
 
-				buf, _ := io.ReadAll(response.Body)
-				fmt.Println(string(buf))
+				// todo 此处理内部是由modifyResponse调用2次
+				// 1. statuscode=101
+				// 2. 默认调用
 
-				p := bluemonday.UGCPolicy()
-				san := p.SanitizeBytes(buf)
-				fmt.Println(string(san))
+				response.Header.Del("Server")
+				response.Header.Del("Date")
+				if strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") {
 
-				//todo 不完整的数据
-				response.ContentLength = int64(len(san))
-				//返回新数据
-				response.Body.Close()
-				response.Body = ioutil.NopCloser(bytes.NewReader(san))
+					buf, _ := io.ReadAll(response.Body)
+					fmt.Println(string(buf))
+
+					p := bluemonday.UGCPolicy()
+					san := p.SanitizeBytes(buf)
+					fmt.Println(string(san))
+
+					//todo 不完整的数据
+					response.ContentLength = int64(len(san))
+					//返回新数据
+					response.Body.Close()
+
+					if strings.EqualFold(response.Header.Get("Content-Encoding"), "gzip") {
+						//todo
+					}
+
+					response.Body = ioutil.NopCloser(bytes.NewReader(san))
+				}
+				fmt.Println(response.Header)
+				return nil
 			}
-			fmt.Println(response.Header)
-			return nil
-		}
 
-		ps.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{cert},
-				InsecureSkipVerify: true,
-				MinVersion:         tls.VersionTLS12,
-			},
-			//Proxy: func(r *http.Request) (*url.URL, error) {
-			//	us, _ := url.Parse(m.Config.App + "://" +
-			//		net.JoinHostPort(m.Config.Upstreamip_str, fmt.Sprintf("%d", m.Config.Upstreamport)) + "/su-uos")
-			//
-			//	return us, nil
-			//},
-			//GetProxyConnectHeader: func(ctx context.Context, proxyURL *url.URL, target string) (http.Header, error) {
-			//	return nil, nil
-			//
-			//},
-			ForceAttemptHTTP2: false,
-		}
+			//重要参数
+			ps.Transport = &http.Transport{
+				TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{cert},
+					InsecureSkipVerify: true,
+					MinVersion:         tls.VersionTLS12,
+				},
+				//Proxy: func(r *http.Request) (*url.URL, error) {
+				//	us, _ := url.Parse(m.Config.App + "://" +
+				//		net.JoinHostPort(m.Config.Upstreamip_str, fmt.Sprintf("%d", m.Config.Upstreamport)) + "/su-uos")
+				//
+				//	return us, nil
+				//},
+				//GetProxyConnectHeader: func(ctx context.Context, proxyURL *url.URL, target string) (http.Header, error) {
+				//	return nil, nil
+				//
+				//},
+				ForceAttemptHTTP2: false,
+				//DialTLSContext: func (ctx context.Context, network, addr string) (net.Conn, error){
+				//
+				//	return nil,nil}
+				//DisableKeepAlives:   false,
+				MaxConnsPerHost: 10, //长连接会话保持?!
+				//TLSHandshakeTimeout: 5 * time.Second,
+				MaxIdleConnsPerHost: 100,
+			}
 
-		oldDirector := ps.Director
-		ps.Director = func(request *http.Request) {
-			//request是代理转发的请求outreq
-			//todo hop-by-hop connection的理解？
+			oldDirector := ps.Director
+			ps.Director = func(request *http.Request) {
+				//request是代理转发的请求outreq
+				//todo hop-by-hop connection的理解？
 
-			oldDirector(request)
-			request.Header.Set("User-Agent", "gope/1.0")
-			request.Proto = "HTTP/1.1"
-			request.ProtoMajor, request.ProtoMinor, _ = http.ParseHTTPVersion(request.Proto)
-			//request.Host
+				localAddr := request.Context().Value(http.LocalAddrContextKey).(net.Addr)
+				fmt.Printf("本地地址2: %s\n", localAddr.String())
 
-			fmt.Println(request)
+				oldDirector(request)
 
-		}
+				request.Header.Set("User-Agent", "gope/1.0")
+				request.Proto = "HTTP/1.1"
+				request.ProtoMajor, request.ProtoMinor, _ = http.ParseHTTPVersion(request.Proto)
+				//request.Host = us.Host
 
-		ps.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
-			fmt.Println(err)
+				if request.Header.Get("Content-Type") == "text/html" {
+					buf, _ := io.ReadAll(request.Body)
+					fmt.Println(string(buf))
+
+					p := bluemonday.UGCPolicy()
+					san := p.SanitizeBytes(buf)
+					fmt.Println(string(san))
+
+					//todo 不完整的数据
+					request.ContentLength = int64(len(san))
+					//返回新数据
+					request.Body.Close()
+					request.Body = ioutil.NopCloser(bytes.NewReader(san))
+				}
+
+				fmt.Println(request)
+
+			}
+
+			ps.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
+				fmt.Println(err)
+			}
+
+			//长连接会话保持?!
+			a.mitmstate[request.RemoteAddr] = ps
+		} else {
+			ps = a.mitmstate[request.RemoteAddr]
 		}
 
 		ps.ServeHTTP(writer, request)

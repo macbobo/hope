@@ -18,3 +18,5 @@ gope(Go Proxy Expert)目前还属于demo阶段，版本定义为v0.0.1-alpha
 
 ```
 
+## _2024-04_
+* 1. 支持http和https，https借用了net/http的ReverseProxy框架实现（方便tls的透明处理）；过滤功能重点是对xss的新特性试验
